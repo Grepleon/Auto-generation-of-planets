@@ -29,5 +29,5 @@ int main() {
         setBlack(k, k);
 
     // Сохранение в PNG
-    stbi_write_png("result.png", width, height, channels, img.data(), width * channels);
+    stbi_write_png("dats/result.png", width, height, channels, img.data(), width * channels);
 }
