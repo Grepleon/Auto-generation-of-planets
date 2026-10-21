@@ -5,19 +5,12 @@
 
 using namespace std;
 
-class Cell{
+class Cell {
     private:
-        int r, g, b;
+        int c[3];
     public:
-        Cell(int r, int g, int b){
-            this->r = r;
-            this->g = g;
-            this->b = b;
-        }
-
-        int* get_color(){
-            return new int[] {r, g, b};
-        }
+        Cell(int r, int g, int b) : c{r, g, b} {}
+        int* get_color() { return c; }
 };
 
 struct Material {
@@ -30,12 +23,12 @@ class Planet{
         int x, y, dx;
         vector<vector<Cell>> cells;
         Material material;
-        Drawer draw;
+        Drawer& draw;
     
     public:
-        Planet(int x, int y, int dx, Drawer draw): x(x), y(y), dx(dx), draw(draw)
+        Planet(int x, int y, int dx, Drawer& draw): x(x), y(y), dx(dx), draw(draw)
         {
-            cells.resize(y, vector<Cell>(x, material.soil));
+            cells.resize(y, vector<Cell>(x, Material().soil));
         }
 
         void show(){
