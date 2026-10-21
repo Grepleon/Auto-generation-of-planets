@@ -39,8 +39,8 @@ class Planet{
         }
 
         void show(){
-            for (int iy=0; iy < y; y++){
-                for (int ix=0; ix < x; x++){
+            for (int iy=0; iy < y; iy++){
+                for (int ix=0; ix < x; ix++){
                     draw.rectangle(ix * dx, iy * dx, ix * dx + dx, iy * dx + dx, cells[iy][ix].get_color());
                 }   
             }

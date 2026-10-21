@@ -10,5 +10,5 @@ int main() {
     
     Planet planet = Planet(100, 100, 5, draw);
     planet.show();
-    draw.Save("data/planet/planet-0");
+    draw.Save("data/planet/planet-0.png");
 }
