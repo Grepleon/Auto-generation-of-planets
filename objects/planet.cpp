@@ -1,17 +1,11 @@
 #include "draw.cpp"
+#include "perlin.cpp"
+#include "cell.cpp"
 #include <vector>
 #include <string>
 #include <cmath>
 
 using namespace std;
-
-class Cell {
-    private:
-        int c[3];
-    public:
-        Cell(int r, int g, int b) : c{r, g, b} {}
-        int* get_color() { return c; }
-};
 
 struct Material {
     Cell soil = Cell(15, 245, 45);
