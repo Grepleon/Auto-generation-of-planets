@@ -2,10 +2,11 @@
 #include <vector>
 #include <random>
 #include <algorithm>
+#include <cmath>
 
 using namespace std;
 
-// один генератор на всю программу (раньше random_device создавался при каждом вызове - это медленно)
+// один генератор на всю программу
 inline std::mt19937& get_gen(){
     static std::mt19937 gen{std::random_device{}()};
     return gen;
@@ -19,6 +20,53 @@ inline int get_rangom(){
 inline double get_rangom_double(){
     std::uniform_real_distribution<double> distrib(0.0, 1.0);
     return distrib(get_gen());
+}
+
+// ---------- 3D шум (для сферы) ----------
+
+// псевдослучайное число 0..1 для узла целочисленной решётки
+inline double hash3(int ix, int iy, int iz, unsigned seed){
+    unsigned h = (unsigned)ix * 374761393u + (unsigned)iy * 668265263u
+               + (unsigned)iz * 2147483629u + seed * 1442695041u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= h >> 16;
+    return (h & 0xFFFFFFu) / 16777216.0;
+}
+
+// гладкий шум: трилинейная интерполяция случайных значений в узлах
+inline double noise3(double x, double y, double z, unsigned seed){
+    double fx = floor(x), fy = floor(y), fz = floor(z);
+    int ix = (int)fx, iy = (int)fy, iz = (int)fz;
+    double tx = x - fx, ty = y - fy, tz = z - fz;
+    tx = tx * tx * (3 - 2 * tx);
+    ty = ty * ty * (3 - 2 * ty);
+    tz = tz * tz * (3 - 2 * tz);
+
+    auto h = [&](int a, int b, int c){ return hash3(ix + a, iy + b, iz + c, seed); };
+
+    double x00 = h(0,0,0) * (1 - tx) + h(1,0,0) * tx;
+    double x10 = h(0,1,0) * (1 - tx) + h(1,1,0) * tx;
+    double x01 = h(0,0,1) * (1 - tx) + h(1,0,1) * tx;
+    double x11 = h(0,1,1) * (1 - tx) + h(1,1,1) * tx;
+    double y0 = x00 * (1 - ty) + x10 * ty;
+    double y1 = x01 * (1 - ty) + x11 * ty;
+    return y0 * (1 - tz) + y1 * tz;
+}
+
+// сумма октав; между октавами координаты поворачиваются и удваиваются,
+// чтобы не было заметных осей решётки
+inline double fbm3(double x, double y, double z, int octaves, double pers, unsigned seed){
+    double sum = 0, amp = 1, tot = 0;
+    for (int k = 0; k < octaves; k++){
+        sum += amp * noise3(x, y, z, seed + 101u * k);
+        tot += amp;
+        amp *= pers;
+        double nx =  0.00 * x + 1.60 * y + 1.20 * z + 3.7;
+        double ny = -1.60 * x + 0.72 * y - 0.96 * z + 1.3;
+        double nz = -1.20 * x - 0.96 * y + 1.28 * z + 5.1;
+        x = nx; y = ny; z = nz;
+    }
+    return sum / tot;
 }
 
 class Perlin{
@@ -56,6 +104,13 @@ private:
         }
     }
 
+    void normalize(){
+        double mn = 1e18, mx = -1e18;
+        for (auto& row : a) for (double v : row) { mn = min(mn, v); mx = max(mx, v); }
+        if (mx <= mn) return;
+        for (auto& row : a) for (double& v : row) v = (v - mn) / (mx - mn);
+    }
+
 public:
     Perlin(int x, int y){
         this->x = x;
@@ -63,6 +118,7 @@ public:
         a.resize(y, vector<double>(x, 0));
     }
 
+    // плоский шум на карте (как раньше)
     // octaves - число слоёв детализации
     // persistence - во сколько раз падает вклад каждой следующей октавы (0.4..0.55)
     // base - размер сетки самой крупной октавы (меньше = крупнее континенты)
@@ -74,15 +130,37 @@ public:
         for (int k=0; k<octaves; k++){
             int gx = base << k;
             if (gx > x) break;                       // мельче пикселя смысла нет
-            int gy = max(1, (int)((long long)gx * y / x));  // ячейки остаются квадратными
+            int gy = max(1, (int)((double)gx * y / x + 0.5));  // ячейки остаются квадратными
             add_octave(gx, gy, amp);
             amp *= persistence;
         }
+        normalize();
+    }
 
-        double mn = 1e18, mx = -1e18;
-        for (auto& row : a) for (double v : row) { mn = min(mn, v); mx = max(mx, v); }
-        if (mx <= mn) return;
-        for (auto& row : a) for (double& v : row) v = (v - mn) / (mx - mn);
+    // шум на СФЕРЕ: каждая клетка карты (долгота, широта) переводится в точку
+    // на единичной сфере, и шум считается в 3D. Нет растяжения у полюсов и нет шва.
+    // freq - число "ячеек" шума на единичный радиус: 1.0..1.5 даёт крупные континенты,
+    // больше - мельче формы
+    void fill_sphere(int octaves = 6, double persistence = 0.5, double freq = 1.5){
+        const double PI = 3.14159265358979323846;
+        unsigned seed = (unsigned)get_gen()();
+
+        vector<double> sl(x), cl(x);
+        for (int i=0; i<x; i++){
+            double lon = ((i + 0.5) / x - 0.5) * 2 * PI;
+            sl[i] = sin(lon);
+            cl[i] = cos(lon);
+        }
+
+        for (int j=0; j<y; j++){
+            double lat = (0.5 - (j + 0.5) / y) * PI;
+            double cy = cos(lat), sy = sin(lat);
+            for (int i=0; i<x; i++){
+                a[j][i] = fbm3(cy * sl[i] * freq, sy * freq, cy * cl[i] * freq,
+                               octaves, persistence, seed);
+            }
+        }
+        normalize();
     }
 
     // порог высоты, при котором доля суши равна land_fraction (например 0.3)
