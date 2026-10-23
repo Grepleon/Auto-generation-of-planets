@@ -8,10 +8,13 @@
 using namespace std;
 
 struct Material {
-    Cell soil = Cell(15, 245, 45);
-    Cell water = Cell(0, 20, 240);
-    Cell montain = Cell(192, 199, 201);
-
+    Cell soil       = Cell(15, 245, 45);
+    Cell hill       = Cell(10, 150, 35);
+    Cell sand       = Cell(230, 215, 140);
+    Cell water      = Cell(0, 20, 240);
+    Cell deep_water = Cell(0, 10, 150);
+    Cell montain    = Cell(120, 125, 130);
+    Cell snow       = Cell(240, 245, 250);
 };
 
 class Planet{
@@ -34,20 +37,31 @@ class Planet{
         }
 
         void fill(){
-            Perlin per = Perlin(x, y);
-            per.fill(7, 0.5, 6);
-            Perlin mon = Perlin(x, y);
-            per.fill(7, 0.5, 6);
-            for (int i=0; i<x; i++){
-                for (int j=0; j<y; j++){
-                    if (per.get_cell(i, j) > 0.5){
-                        if (mon.get_cell(i, j) > 0.5) 
-                            cells[j][i] = Material().montain;
-                        else
-                            cells[j][i] = Material().soil;
+            Perlin per = Perlin(x, y);  per.fill(7, 0.5, 6);   // высота
+            Perlin mon = Perlin(x, y);  mon.fill(5, 0.5, 8);   // хребты
+
+            double sea = per.sea_level(0.35);
+            Material m;
+
+            for (int j=0; j<y; j++){
+                double pole = fabs(j / (double)y - 0.5) * 2.0;     // 0 на экваторе, 1 у полюса
+
+                for (int i=0; i<x; i++){
+                    double h     = per.get_cell(i, j);
+                    double ridge = 1.0 - fabs(2.0 * mon.get_cell(i, j) - 1.0);
+
+                    if (h < sea){
+                        // вода: глубже, чем дальше от берега по высоте
+                        cells[j][i] = (h < sea - 0.08) ? m.deep_water : m.water;
+                        if (pole > 0.9) cells[j][i] = m.snow;      // лёд у полюсов
                     }
                     else {
-                        cells[j][i] = Material().water;
+                        double land = h - sea;                     // высота над морем
+                        if (pole > 0.88)                    cells[j][i] = m.snow;
+                        else if (ridge > 0.92 && land > 0.05) cells[j][i] = (ridge > 0.97) ? m.snow : m.montain;
+                        else if (land < 0.015)              cells[j][i] = m.sand;
+                        else if (land > 0.12)               cells[j][i] = m.hill;
+                        else                                cells[j][i] = m.soil;
                     }
                 }
             }
