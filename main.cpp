@@ -14,7 +14,11 @@ int main() {
 
     Planet planet1 = Planet(2560, 1440, 1, draw);
     planet1.fill();
-    planet1.show3D(1250, 100, 0.3);
+    planet1.show3D(1250, 100, 0.3, 1, 1);
 
-    draw.Save("data/planet/planet-6.0.png");
+    Planet planet0 = Planet(2560, 1440, 1, draw);
+    planet1.fill();
+    planet1.show3D(-400, 100, 0.3, 2, 2);
+
+    draw.Save("data/planet/planet-7.0.png");
 }
