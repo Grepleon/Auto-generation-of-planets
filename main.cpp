@@ -6,19 +6,13 @@
 using namespace std;
 
 int main() {
-    Drawer draw = Drawer(2560, 1440);
+    Drawer draw = Drawer(10000, 1440);
     draw.blackRectangle(0, 0, 2560-1, 1440-1);
     Planet planet = Planet(2560, 1440, 1, draw);
     planet.fill();
-    planet.show3D(500, 0, 0.5);
+    for (int i=0; i<30; i++)
+        planet.show3D(-400 + i * 500, 0, 0.3, i, i / 60.0);
 
-    Planet planet1 = Planet(2560, 1440, 1, draw);
-    planet1.fill();
-    planet1.show3D(1250, 100, 0.3, 1, 1);
 
-    Planet planet0 = Planet(2560, 1440, 1, draw);
-    planet1.fill();
-    planet1.show3D(-400, 100, 0.3, 2, 2);
-
-    draw.Save("data/planet/planet-7.0.png");
+    draw.Save("data/planet/planet-7.3f.png");
 }

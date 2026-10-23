@@ -73,11 +73,25 @@ class Planet{
 
             double sea = per.sea_level(0.35);
             double relief = x * 0.06;       // сила теней рельефа (больше = контрастнее горы)
+            double mount  = 0.18;           // насколько хребты поднимаются над равниной
             Material m;
+
+            // высота с учётом гор: хребты реально приподнимают местность
+            auto elev = [&](int i, int j){
+                double hh = per.get_cell(i, j);
+                double rr = 1.0 - fabs(2.0 * mon.get_cell(i, j) - 1.0);
+                double ld = hh - sea;
+                if (ld <= 0) return hh;
+                return hh + mount * pow(rr, 4) * clamp01(ld / 0.05);
+            };
 
             for (int j=0; j<y; j++){
                 double pole = fabs(j / (double)y - 0.5) * 2.0;     // 0 на экваторе, 1 у полюса
                 int ju = max(j - 1, 0), jd = min(j + 1, y - 1);
+
+                // у полюсов строка карты сжимается в точку, а шум растягивается лучами.
+                // pf = 1 на обычных широтах, плавно падает до 0 у полюса: гасим там детали
+                double pf = 1.0 - sstep(0.72, 0.95, pole);
 
                 // температура по широте: 1 на экваторе, быстро падает к полюсам
                 double base_temp = 1.0 - pow(pole, 1.6);
@@ -91,10 +105,10 @@ class Planet{
 
                     double h     = per.get_cell(i, j);
                     double ridge = 1.0 - fabs(2.0 * mon.get_cell(i, j) - 1.0);
-                    double d     = det.get_cell(i, j);             // 0..1, мелкий шум
+                    double d     = 0.5 + (det.get_cell(i, j) - 0.5) * pf;   // 0..1, мелкий шум
 
                     // температура с шумом (границы шапок получаются рваными)
-                    double temp = base_temp + (tmp.get_cell(i, j) - 0.5) * 0.35 + (d - 0.5) * 0.08;
+                    double temp = base_temp + (tmp.get_cell(i, j) - 0.5) * 0.35 * pf + (d - 0.5) * 0.08;
 
                     if (h < sea){
                         // ВОДА: узкий шельф, потом глубина
@@ -108,7 +122,7 @@ class Planet{
                     }
                     else {
                         // СУША
-                        double land  = h - sea;                    // высота над морем
+                        double land  = elev(i, j) - sea;           // высота над морем (с горами)
                         temp -= land * 0.7;                        // в горах холоднее
 
                         // шум в влажности делает границы биомов рваными, а не размытыми
@@ -128,18 +142,17 @@ class Planet{
                         // снег и лёд на холоде
                         col = col.mix(m.snow, sstep(0.25, 0.20, temp));
 
-                        // горные хребты: камень, на самых высоких местах снежные шапки
-                        double high = sstep(0.03, 0.07, land);
-                        double rock = sstep(0.89, 0.93, ridge) * high;
-                        double cap  = sstep(0.95, 0.975, ridge) * high;
+                        // горы: широкие каменные склоны, снежные шапки только на самых высоких
+                        double high = sstep(0.03, 0.07, land) * pf;
+                        double rock = sstep(0.82, 0.90, ridge) * high;
+                        double cap  = sstep(0.90, 0.97, ridge) * sstep(0.10, 0.18, land) * pf;
                         col = col.mix(m.rock, rock);
                         col = col.mix(m.snow, cap);
 
                         // тень рельефа: свет с северо-запада, склоны к свету ярче
-                        double slope = (per.get_cell(ir, j) - per.get_cell(il, j))
-                                     + (per.get_cell(i, jd) - per.get_cell(i, ju));
-                        double light = 1.0 + relief * slope * (1.0 + 1.5 * rock);
-                        light = min(1.35, max(0.65, light));
+                        double slope = (elev(ir, j) - elev(il, j)) + (elev(i, jd) - elev(i, ju));
+                        double light = 1.0 + relief * slope * pf * (1.0 + 2.0 * rock);
+                        light = min(1.4, max(0.6, light));
 
                         cells[j][i] = col.shade(light * (0.92 + d * 0.16));
                     }
