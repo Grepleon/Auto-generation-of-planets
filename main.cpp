@@ -16,5 +16,5 @@ int main() {
     planet1.fill();
     planet1.show3D(1250, 100, 0.3);
 
-    draw.Save("data/planet/planet-5.0.png");
+    draw.Save("data/planet/planet-6.0.png");
 }
