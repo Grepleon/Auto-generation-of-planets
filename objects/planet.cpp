@@ -25,6 +25,21 @@ class Planet{
             cells.resize(y, vector<Cell>(x, Material().soil));
         }
 
+        void fill(){
+            Perlin per = Perlin(x, y);
+            per.fill();
+            for (int i=0; i<x; i++){
+                for (int j=0; j<y; j++){
+                    if (per.get_cell(i, j) > 0.6){
+                        cells[j][i] = Material().soil;
+                    }
+                    else {
+                        cells[j][i] = Material().water;
+                    }
+                }
+            }
+        }
+
         void show(){
             for (int iy=0; iy < y; iy++){
                 for (int ix=0; ix < x; ix++){

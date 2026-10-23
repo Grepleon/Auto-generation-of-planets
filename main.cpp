@@ -8,7 +8,8 @@ using namespace std;
 int main() {
     Drawer draw = Drawer(2560, 1440);
     draw.blackRectangle(0, 0, 2560-1, 1440-1);
-    Planet planet = Planet(100, 100, 5, draw);
+    Planet planet = Planet(2560, 1440, 5, draw);
+    planet.fill();
     planet.show();
-    draw.Save("data/planet/planet-2x.png");
+    draw.Save("data/planet/planet-4.png");
 }
