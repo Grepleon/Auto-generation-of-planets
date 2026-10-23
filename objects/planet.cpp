@@ -27,10 +27,10 @@ class Planet{
 
         void fill(){
             Perlin per = Perlin(x, y);
-            per.fill();
+            per.fill(7, 0.5, 6);
             for (int i=0; i<x; i++){
                 for (int j=0; j<y; j++){
-                    if (per.get_cell(i, j) > 0.6){
+                    if (per.get_cell(i, j) > 0.5){
                         cells[j][i] = Material().soil;
                     }
                     else {
