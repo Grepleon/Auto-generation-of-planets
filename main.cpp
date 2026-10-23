@@ -10,6 +10,11 @@ int main() {
     draw.blackRectangle(0, 0, 2560-1, 1440-1);
     Planet planet = Planet(2560, 1440, 1, draw);
     planet.fill();
-    planet.show();
-    draw.Save("data/planet/planet-3.4.png");
+    planet.show3D(500, 0, 0.5);
+
+    Planet planet1 = Planet(2560, 1440, 1, draw);
+    planet1.fill();
+    planet1.show3D(1250, 100, 0.3);
+
+    draw.Save("data/planet/planet-4.8.png");
 }
