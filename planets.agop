@@ -1,0 +1,14 @@
+BASE:    
+    CANVAS: w, h
+    FON: "#000000"
+    SAVE: "data/example/planet.png"
+
+CODE:
+    CREATE SUN sun
+    SHOW sun: x, y, r, rot, lilt
+
+    CREATE PLANET planet
+    SHOW planet: x, y, r, rot, lilt
+
+    CREATE PLANET planet2
+    SHOW planet2: x, y, r, rot, lilt

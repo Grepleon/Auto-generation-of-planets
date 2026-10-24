@@ -6,11 +6,11 @@
 using namespace std;
 
 int main() {
-    Drawer draw = Drawer(2560, 1440);
-    draw.blackRectangle(0, 0, 2560-1, 1440-1);
-    Planet planet = Planet(2560, 1440, 1, draw);
+    Drawer draw = Drawer(10000, 10000);
+    draw.blackRectangle(0, 0, 10000-1, 10000-1);
+    Planet planet = Planet(10000, 10000, 1, draw);
     planet.fill();
     planet.show3D(0, 0);
 
-    draw.Save("data/planet/planet-8.3.png");
+    draw.Save("data/planet/planet-8.5.png");
 }
