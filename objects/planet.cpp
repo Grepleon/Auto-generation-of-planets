@@ -1,3 +1,4 @@
+#pragma once
 #include "draw.cpp"
 #include "perlin.cpp"
 #include "cell.cpp"
@@ -6,9 +7,65 @@
 #include <cmath>
 #include <algorithm>
 
-#pragma once
-
 using namespace std;
+
+// ============================================================
+//  Математика
+// ============================================================
+
+struct Vec3 {
+    double x = 0, y = 0, z = 0;
+    Vec3() {}
+    Vec3(double x, double y, double z): x(x), y(y), z(z) {}
+
+    Vec3 operator+(const Vec3& o) const { return Vec3(x + o.x, y + o.y, z + o.z); }
+    Vec3 operator-(const Vec3& o) const { return Vec3(x - o.x, y - o.y, z - o.z); }
+    Vec3 operator*(double k)      const { return Vec3(x * k, y * k, z * k); }
+    double dot(const Vec3& o)     const { return x * o.x + y * o.y + z * o.z; }
+    double len()                  const { return sqrt(x * x + y * y + z * z); }
+    Vec3 norm() const {
+        double l = len();
+        return l > 1e-12 ? Vec3(x / l, y / l, z / l) : Vec3(0, 0, 1);
+    }
+};
+
+// Камера смотрит вдоль +Z; X вправо, Y вверх. Перспективная проекция.
+struct Camera {
+    Vec3 pos;
+    int w, h;          // размер холста в пикселях
+    double focal;      // фокусное расстояние в пикселях
+
+    Camera(int w, int h, Vec3 pos = Vec3(0, 0, -10), double fov_deg = 40.0)
+        : pos(pos), w(w), h(h)
+    {
+        const double PI = acos(-1.0);
+        focal = (h / 2.0) / tan(fov_deg * PI / 360.0);
+    }
+
+    // единичный луч через пиксель (px, py)
+    Vec3 ray(double px, double py) const {
+        return Vec3((px - w / 2.0) / focal, -(py - h / 2.0) / focal, 1.0).norm();
+    }
+};
+
+class Planet;
+
+// Точечный источник света (например, Солнце)
+struct Light {
+    Vec3 pos;
+    double r = 1, g = 1, b = 1;     // цвет 0..1
+    double intensity = 1.0;
+    double range = 0.0;             // 0 = без затухания; иначе яркость ~ 1 / (1 + (d/range)^2)
+    const Planet* owner = nullptr;  // тело, которое светит (оно не отбрасывает тень на свет)
+};
+
+// Всё, что нужно телу для отрисовки: камера, источники света и другие тела (для теней)
+struct RenderContext {
+    Camera cam;
+    vector<Light> lights;
+    vector<const Planet*> bodies;
+    RenderContext(const Camera& c): cam(c) {}
+};
 
 struct Material {
     // вода: от берега к глубине
@@ -47,20 +104,23 @@ static inline Cell ramp(const Cell& a, const Cell& b, const Cell& c, double t){
     return t < 0.5 ? a.mix(b, t * 2) : b.mix(c, (t - 0.5) * 2);
 }
 
-class Planet{    
+// ============================================================
+//  Планета
+// ============================================================
+
+class Planet{
     protected:
-        int x, y, dx;
+        int x, y, dx;                          // x, y - размер карты поверхности; dx - размер блока пикселей при выводе
         vector<vector<Cell>> cells;
         vector<vector<unsigned char>> water;   // 1 - открытая вода (для блика)
         vector<vector<double>> clouds;         // плотность облаков 0..1
         Material material;
         Drawer& draw;
 
-        int dist(int x1, int y1){
-            int dx = x1 - x / 2;
-            int dy = y1 - y / 2;
-            return sqrt(dx * dx + dy * dy);
-        } 
+        Vec3 pos;            // положение центра в мировых координатах
+        double radius;       // радиус в мировых единицах
+        double rot  = 0.0;   // поворот вокруг своей оси (радианы)
+        double tilt = 0.0;   // наклон оси (радианы)
 
         // билинейная выборка цвета карты; fx, fy - доли карты 0..1
         void sample_color(double fx, double fy, double& r, double& g, double& b){
@@ -93,9 +153,154 @@ class Planet{
             return clouds[ya][x0] * (1 - tx) * (1 - ty) + clouds[ya][x1] * tx * (1 - ty)
                  + clouds[yb][x0] * (1 - tx) * ty       + clouds[yb][x1] * tx * ty;
         }
-    
+
+        // Нормаль в мировых координатах -> широта (sin) и "базовая" долгота с учётом наклона оси.
+        // Ориентация тела не зависит от камеры.
+        void local_coords(const Vec3& N, double& sin_lat, double& lon0) const {
+            double ct = cos(tilt), st = sin(tilt);
+            double w  = -N.z;
+            sin_lat   = max(-1.0, min(1.0, N.y * ct - w * st));
+            double w2 = N.y * st + w * ct;
+            lon0      = atan2(N.x, w2);
+        }
+
+        // долгота/широта -> доли карты 0..1
+        void to_map(double lon, double lat, double& fx, double& fy) const {
+            const double PI = acos(-1.0);
+            fx = fmod(lon / (2 * PI) + 0.5, 1.0);
+            if (fx < 0) fx += 1.0;
+            fy = clamp01(0.5 - lat / PI);
+        }
+
+        // Доля света, дошедшего до точки P от источника L (0 = полная тень, 1 = свет).
+        // Тени мягкие: учитывается угловой размер и источника, и затмевающего тела.
+        double visibility(const Vec3& P, const Vec3& l, double dl, const Light& L,
+                          const RenderContext& ctx) const {
+            double vis = 1.0;
+            double rl  = L.owner ? L.owner->radius : 0.0;
+            double al  = asin(min(1.0, rl / dl));            // угловой радиус источника
+
+            for (const Planet* b : ctx.bodies){
+                if (b == this || b == L.owner) continue;
+                Vec3 o = b->pos - P;
+                double d = o.len();
+                if (d <= b->radius) continue;
+                double along = o.dot(l);
+                if (along <= 0 || along >= dl) continue;     // тело не между точкой и светом
+
+                double sep = acos(max(-1.0, min(1.0, along / d)));   // угол между светом и телом
+                double ao  = asin(b->radius / d);                    // угловой радиус тела
+                double e0  = ao - al, e1 = ao + al;
+                if (e1 - e0 < 1e-4) e1 = e0 + 1e-4;
+                vis = min(vis, sstep(e0, e1, sep));
+            }
+            return vis;
+        }
+
+        // Цвет видимой точки поверхности.
+        // P - точка в мире, N - нормаль, V - единичный вектор от точки к камере.
+        virtual Cell shade_point(const Vec3& P, const Vec3& N, const Vec3& V,
+                                 const RenderContext& ctx){
+            const double PI = acos(-1.0);
+
+            double sin_lat, lon0;
+            local_coords(N, sin_lat, lon0);
+            double lat = asin(sin_lat);
+            double fx, fy;
+            to_map(lon0 + rot, lat, fx, fy);
+
+            double r, g, b;
+            sample_color(fx, fy, r, g, b);
+
+            int ix = min(x - 1, (int)(fx * x));
+            int iy = min(y - 1, (int)(fy * y));
+            bool is_water = water[iy][ix] != 0;
+
+            // облака двигаются чуть быстрее поверхности
+            double cfx = fmod(fx + rot * 0.12 / (2 * PI), 1.0);
+            if (cfx < 0) cfx += 1.0;
+            double cl = sample_clouds(cfx, fy) * 0.9;
+            r = r * (1 - cl) + 245 * cl;
+            g = g * (1 - cl) + 247 * cl;
+            b = b * (1 - cl) + 250 * cl;
+
+            // освещение от всех источников
+            double lr = 0, lg = 0, lb = 0;       // диффузный свет
+            double sr = 0, sg = 0, sb = 0;       // блик
+            double best = -1.0;                  // наибольший косинус угла к свету (для атмосферы)
+
+            for (const Light& L : ctx.lights){
+                if (L.owner == this) continue;
+
+                Vec3 tl = L.pos - P;
+                double dl = tl.len();
+                if (dl < 1e-9) continue;
+                Vec3 l = tl * (1.0 / dl);
+
+                double diff  = N.dot(l);
+                double atten = L.range > 0 ? 1.0 / (1.0 + (dl / L.range) * (dl / L.range)) : 1.0;
+                best = max(best, diff * atten);
+                if (diff <= 0) continue;
+
+                double k = L.intensity * atten * visibility(P, l, dl, L, ctx);
+                if (k <= 0) continue;
+
+                double lam = pow(diff, 0.75) * k;
+                lr += L.r * lam;  lg += L.g * lam;  lb += L.b * lam;
+
+                if (is_water){
+                    Vec3 H = (l + V).norm();
+                    double nh   = max(0.0, N.dot(H));
+                    double spec = pow(nh, 90) * 0.35 * (1 - cl) * k;
+                    sr += L.r * spec;  sg += L.g * spec;  sb += L.b * spec;
+                }
+            }
+
+            const double amb = 0.04;             // ночной ambient
+            r *= amb + 0.96 * min(1.5, lr);
+            g *= amb + 0.96 * min(1.5, lg);
+            b *= amb + 0.96 * min(1.5, lb);
+
+            r += 255 * sr;  g += 255 * sg;  b += 255 * sb;
+
+            // атмосфера: голубое свечение у края диска, сильнее на дневной стороне
+            double facing = clamp01(N.dot(V));
+            double rim = pow(1.0 - facing, 3.0) * 0.8 * clamp01(best + 0.25);
+            r += 70 * rim;  g += 130 * rim;  b += 255 * rim;
+
+            return Cell((int)min(255.0, r), (int)min(255.0, g), (int)min(255.0, b));
+        }
+
+        // Экранный прямоугольник, который может занимать тело. false - тело не видно.
+        bool screen_box(const Camera& cam, int& x0, int& y0, int& x1, int& y1) const {
+            const double PI = acos(-1.0);
+            Vec3 c = pos - cam.pos;
+            double d = c.len();
+            if (c.z <= 0 || d <= radius) return false;
+
+            double a     = asin(radius / d);            // угловой радиус
+            double theta = acos(max(-1.0, min(1.0, c.z / d)));   // угол от оси камеры
+            double cxp = cam.w / 2.0 + cam.focal * c.x / c.z;
+            double cyp = cam.h / 2.0 - cam.focal * c.y / c.z;
+
+            double rpx;
+            if (theta + a >= PI / 2 - 0.02) rpx = 1e7;
+            else rpx = cam.focal * max(tan(theta + a) - tan(theta), tan(theta) - tan(theta - a)) * 1.1 + 2;
+
+            x0 = (int)max(0.0, floor(cxp - rpx));
+            y0 = (int)max(0.0, floor(cyp - rpx));
+            x1 = (int)min((double)cam.w, ceil(cxp + rpx));
+            y1 = (int)min((double)cam.h, ceil(cyp + rpx));
+            if (x0 >= x1 || y0 >= y1) return false;
+
+            x0 -= x0 % dx;
+            y0 -= y0 % dx;
+            return true;
+        }
+
     public:
-        Planet(int x, int y, int dx, Drawer& draw): x(x), y(y), dx(dx), draw(draw)
+        Planet(int x, int y, int dx, Drawer& draw, Vec3 pos = Vec3(0, 0, 0), double radius = 1.0)
+            : x(x), y(y), dx(dx), draw(draw), pos(pos), radius(radius)
         {
             cells.resize(y, vector<Cell>(x, Material().forest));
             water.resize(y, vector<unsigned char>(x, 0));
@@ -104,6 +309,20 @@ class Planet{
 
         virtual ~Planet(){}
 
+        // ---------- положение и ориентация ----------
+        void   set_pos(const Vec3& p)            { pos = p; }
+        void   set_radius(double r)              { radius = r; }
+        void   set_pose(double rot_, double tilt_) { rot = rot_; tilt = tilt_; }
+        Vec3   get_pos()    const { return pos; }
+        double get_radius() const { return radius; }
+
+        // Если тело светит само, заполняет out и возвращает true
+        virtual bool emit_light(Light& out) const { return false; }
+
+        // Рисуется до всех тел (свечение, корона)
+        virtual void draw_back(const RenderContext& ctx){}
+
+        // ---------- генерация поверхности ----------
         virtual void fill(){
             const double PI = acos(-1.0);
 
@@ -116,7 +335,9 @@ class Planet{
             Perlin cld = Perlin(x, y);  cld.fill_sphere(6, 0.55, 2.0);  // облака
 
             double sea = per.sea_level(0.35);
-            double relief = 0.3;            // сила теней рельефа (больше = контрастнее горы)
+            // Тени рельефа теперь "запечены" в текстуру, а свет движется, поэтому они слабые:
+            // нужны лишь как намёк на объём. Основное освещение считается при выводе.
+            double relief = 0.15;
             double mount  = 0.18;           // насколько хребты поднимаются над равниной
             Material m;
 
@@ -199,11 +420,11 @@ class Planet{
                         col = col.mix(m.rock, rock);
                         col = col.mix(m.snow, cap);
 
-                        // тень рельефа: уклон в радианах, свет с северо-запада
+                        // лёгкая тень рельефа (см. комментарий к relief)
                         double sx = (elev(ir, j) - elev(il, j)) / step_x;
                         double sy = (elev(i, jd) - elev(i, ju)) / step_y;
                         double light = 1.0 + relief * (sx + sy) * (1.0 + 2.0 * rock);
-                        light = min(1.3, max(0.7, light));
+                        light = min(1.2, max(0.8, light));
 
                         cells[j][i] = col.shade(light * (0.93 + d * 0.14));
                     }
@@ -211,6 +432,7 @@ class Planet{
             }
         }
 
+        // плоская карта поверхности
         virtual void show(){
             for (int iy=0; iy < y; iy++){
                 for (int ix=0; ix < x; ix++){
@@ -218,89 +440,40 @@ class Planet{
                         ix * dx,
                         iy * dx,
                         ix * dx + dx,
-                        iy * dx + dx, 
+                        iy * dx + dx,
 
                         cells[iy][ix].get_color());
-                }   
+                }
             }
         }
 
-        // sunx, suny, sunz - направление на солнце (x вправо, y вверх, z к зрителю)
-        virtual void show3D(int ddx=0, int ddy=0, double dr=1, double rot = 0.0, double tilt = 0.0,
-                    double sunx = -0.7, double suny = 0.3, double sunz = 0.65){
-            const double PI = acos(-1.0);
+        // Объёмный вывод: трассировка луча от камеры через каждый пиксель до сферы.
+        // Общий для всех тел; различается только shade_point().
+        virtual void show3D(const RenderContext& ctx){
+            const Camera& cam = ctx.cam;
 
-            int size = y * dx;                 // диаметр шара в пикселях
-            double R  = size / 2.0 * dr;
-            double cx = size / 2.0 + ddx;
-            double cy = size / 2.0 + ddy;
-            double ct = cos(tilt), st = sin(tilt);
+            int x0, y0, x1, y1;
+            if (!screen_box(cam, x0, y0, x1, y1)) return;
 
-            // нормированное направление света и вектор блика (середина между светом и взглядом)
-            double sl = sqrt(sunx * sunx + suny * suny + sunz * sunz);
-            double lx = sunx / sl, ly = suny / sl, lz = sunz / sl;
-            double hx = lx, hy = ly, hz = lz + 1.0;
-            double hl = sqrt(hx * hx + hy * hy + hz * hz);
-            hx /= hl; hy /= hl; hz /= hl;
+            Vec3 oc = cam.pos - pos;
+            double cc = oc.dot(oc) - radius * radius;
 
-            for (int py = 0; py < size + ddy; py += dx){
-                for (int px = 0; px < size + ddx; px += dx){
-                    // центр блока в координатах единичного круга
-                    double u =  (px + dx / 2.0 - cx) / R;
-                    double v = -(py + dx / 2.0 - cy) / R;      // ось Y вверх
-                    double r2 = u * u + v * v;
-                    if (r2 > 1.0) continue;                     // вне шара
+            for (int py = y0; py < y1; py += dx){
+                for (int px = x0; px < x1; px += dx){
+                    Vec3 D = cam.ray(px + dx / 2.0, py + dx / 2.0);
 
-                    double w = sqrt(1.0 - r2);                  // глубина к зрителю
+                    // пересечение луча со сферой
+                    double bb   = oc.dot(D);
+                    double disc = bb * bb - cc;
+                    if (disc < 0) continue;
+                    double t = -bb - sqrt(disc);
+                    if (t <= 0) continue;
 
-                    // наклон оси планеты (вращение вокруг X)
-                    double v2 = v * ct - w * st;
-                    double w2 = v * st + w * ct;
+                    Vec3 P = cam.pos + D * t;
+                    Vec3 N = (P - pos) * (1.0 / radius);
+                    Vec3 V = D * -1.0;
 
-                    // широта и долгота точки
-                    double lat = asin(v2);                      // -PI/2 .. PI/2
-                    double lon = atan2(u, w2) + rot;            // вращение планеты
-
-                    // положение на карте (доли 0..1)
-                    double fx = fmod(lon / (2 * PI) + 0.5, 1.0);
-                    if (fx < 0) fx += 1.0;
-                    double fy = clamp01(0.5 - lat / PI);
-
-                    // цвет поверхности (плавная выборка)
-                    double r, g, b;
-                    sample_color(fx, fy, r, g, b);
-
-                    int ix = min(x - 1, (int)(fx * x));
-                    int iy = min(y - 1, (int)(fy * y));
-                    bool is_water = water[iy][ix] != 0;
-
-                    // облака двигаются чуть быстрее поверхности
-                    double cfx = fmod(fx + rot * 0.12 / (2 * PI), 1.0);
-                    if (cfx < 0) cfx += 1.0;
-                    double cl = sample_clouds(cfx, fy) * 0.9;
-                    r = r * (1 - cl) + 245 * cl;
-                    g = g * (1 - cl) + 247 * cl;
-                    b = b * (1 - cl) + 250 * cl;
-
-                    // освещение: нормаль точки на шаре - это (u, v, w)
-                    double diff = u * lx + v * ly + w * lz;
-                    double lam  = clamp01(diff);
-                    double light = 0.04 + 0.96 * pow(lam, 0.75);   // 0.04 - ночной ambient
-
-                    r *= light; g *= light; b *= light;
-
-                    // блик на воде (не на облаках)
-                    if (is_water && diff > 0){
-                        double nh = max(0.0, u * hx + v * hy + w * hz);
-                        double spec = pow(nh, 90) * 0.6 * (1 - cl);
-                        r += 255 * spec; g += 255 * spec; b += 255 * spec;
-                    }
-
-                    // атмосфера: голубое свечение у края диска, сильнее на дневной стороне
-                    double rim = pow(1.0 - w, 3.0) * 0.8 * clamp01(diff + 0.25);
-                    r += 70 * rim; g += 130 * rim; b += 255 * rim;
-
-                    Cell out((int)min(255.0, r), (int)min(255.0, g), (int)min(255.0, b));
+                    Cell out = shade_point(P, N, V, ctx);
                     draw.rectangle(px, py, px + dx, py + dx, out.get_color());
                 }
             }

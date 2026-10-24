@@ -2,37 +2,84 @@
 #include "planet.cpp"
 
 struct SunMaterial {
-    Cell cool   = Cell(150, 35, 0);      // тёмные края гранул
-    Cell mid    = Cell(255, 120, 10);
-    Cell warm   = Cell(255, 200, 70);
-    Cell hot    = Cell(255, 245, 200);   // яркие факелы
-    Cell umbra  = Cell(40, 8, 0);        // ядро пятна
-    Cell penum  = Cell(120, 40, 5);      // полутень пятна
+    Cell cool   = Cell(190, 60, 5);      // тёмные края гранул
+    Cell mid    = Cell(255, 140, 25);
+    Cell warm   = Cell(255, 205, 90);
+    Cell hot    = Cell(255, 240, 180);   // яркие участки
+    Cell penum  = Cell(150, 60, 15);     // полутень пятна
+    Cell umbra  = Cell(95, 35, 8);       // ядро пятна (не чёрное)
 };
 
 class Sun : public Planet {
     private:
         SunMaterial sm;
-        int canvas_w, canvas_h;   // 0 = без ограничения
-        double corona;            // размер короны в радиусах диска
+        double corona;        // размер короны в радиусах диска
+        double spot_amount;   // 0 = без пятен, 1 = много (но всё равно небольших)
+        double intensity;     // яркость света, который Солнце даёт другим телам
+
+    protected:
+        // Солнце светит само: освещение не считается, только гранулы + потемнение к краю
+        Cell shade_point(const Vec3& P, const Vec3& N, const Vec3& V,
+                         const RenderContext& ctx) override {
+            double sin_lat, lon0;
+            local_coords(N, sin_lat, lon0);
+            double lat = asin(sin_lat);
+
+            // дифференциальное вращение: экватор крутится быстрее полюсов
+            double lon = lon0 + rot * (1.0 - 0.15 * sin_lat * sin_lat);
+
+            double fx, fy;
+            to_map(lon, lat, fx, fy);
+
+            double r, g, b;
+            sample_color(fx, fy, r, g, b);
+
+            // потемнение к краю: края темнее и краснее
+            double w = clamp01(N.dot(V));          // 1 в центре, 0 на краю
+            double k = 1.0 - 0.55 * (1.0 - w);
+            r *= k;
+            g *= pow(k, 1.2);
+            b *= pow(k, 1.8);
+
+            // лёгкое свечение у самого края
+            double rim = pow(1.0 - w, 6.0) * 0.2;
+            r += 255 * rim;  g += 150 * rim;  b += 40 * rim;
+
+            return Cell((int)min(255.0, r), (int)min(255.0, g), (int)min(255.0, b));
+        }
 
     public:
-        Sun(int x, int y, int dx, Drawer& draw, int canvas_w = 0, int canvas_h = 0, double corona = 0.8)
-            : Planet(x, y, dx, draw), canvas_w(canvas_w), canvas_h(canvas_h), corona(corona) {}
+        Sun(int x, int y, int dx, Drawer& draw, Vec3 pos = Vec3(0, 0, 0), double radius = 1.0,
+            double corona = 0.6, double spot_amount = 0.3, double intensity = 1.0)
+            : Planet(x, y, dx, draw, pos, radius),
+              corona(corona), spot_amount(spot_amount), intensity(intensity) {}
 
-        // Поверхность: грануляция + пятна + факелы. Воды и облаков нет.
+        // Солнце - источник света сцены
+        bool emit_light(Light& out) const override {
+            out.pos = pos;
+            out.r = 1.0;  out.g = 0.95;  out.b = 0.85;
+            out.intensity = intensity;
+            out.range = 0.0;
+            out.owner = this;
+            return true;
+        }
+
+        // Поверхность: грануляция, слабые факелы и небольшие мягкие пятна
         void fill() override {
             const double PI = acos(-1.0);
 
             Perlin gran  = Perlin(x, y); gran.fill_sphere(6, 0.55, max(8.0, x / 8.0));  // мелкие гранулы
             Perlin meso  = Perlin(x, y); meso.fill_sphere(4, 0.5, 3.0);                 // крупные ячейки
-            Perlin spots = Perlin(x, y); spots.fill_sphere(3, 0.5, 2.0);                // пятна
-            Perlin fac   = Perlin(x, y); fac.fill_sphere(4, 0.5, 4.0);                  // факелы
+            Perlin spots = Perlin(x, y); spots.fill_sphere(3, 0.5, 7.0);                // пятна (мелкие)
+            Perlin fac   = Perlin(x, y); fac.fill_sphere(4, 0.5, 5.0);                  // факелы
+
+            // порог появления пятен: чем больше spot_amount, тем ниже порог
+            double thr = 0.80 - 0.10 * clamp01(spot_amount);
 
             for (int j = 0; j < y; j++){
                 double lat  = (0.5 - (j + 0.5) / y) * PI;
                 double pole = fabs(lat) / (PI / 2);
-                // пятна живут в "королевских зонах" около ±30° и почти не встречаются у экватора и полюсов
+                // пятна живут в зонах около ±30° и почти не встречаются у экватора и полюсов
                 double zone = exp(-pow((pole - 0.35) / 0.22, 2));
 
                 for (int i = 0; i < x; i++){
@@ -42,19 +89,19 @@ class Sun : public Planet {
 
                     // яркость фотосферы: гранулы поверх крупных ячеек
                     double t = clamp01(0.55 * g + 0.45 * m);
-                    t = sstep(0.25, 0.80, t);
+                    t = sstep(0.30, 0.75, t);
                     Cell col = ramp(sm.cool, sm.mid, sm.warm, t);
 
-                    // факелы: светлые пятна рядом с активными зонами
-                    double faculae = sstep(0.62, 0.80, f) * (0.3 + 0.7 * zone);
-                    col = col.mix(sm.hot, faculae * 0.8);
+                    // факелы: еле заметное осветление, без крупных светлых пятен
+                    double faculae = sstep(0.66, 0.82, f) * (0.2 + 0.8 * zone);
+                    col = col.mix(sm.hot, faculae * 0.35);
 
-                    // солнечные пятна: полутень шире и светлее, ядро темнее
-                    double s = spots.get_cell(i, j) - 0.2 * (1.0 - zone);
-                    double pen = sstep(0.62, 0.68, s);
-                    double umb = sstep(0.69, 0.74, s);
-                    col = col.mix(sm.penum, pen * 0.9);
-                    col = col.mix(sm.umbra, umb);
+                    // пятна: редкие, небольшие, с широким плавным краем и негустым ядром
+                    double s   = spots.get_cell(i, j) - 0.12 * (1.0 - zone);
+                    double pen = sstep(thr,        thr + 0.05, s);
+                    double umb = sstep(thr + 0.04, thr + 0.09, s);
+                    col = col.mix(sm.penum, pen * 0.6);
+                    col = col.mix(sm.umbra, umb * 0.7);
 
                     cells[j][i] = col;
                     water[j][i] = 0;
@@ -63,74 +110,43 @@ class Sun : public Planet {
             }
         }
 
-        // Солнце светит само: направление света sunx/suny/sunz игнорируется.
-        void show3D(int ddx=0, int ddy=0, double dr=1, double rot = 0.0, double tilt = 0.0,
-                    double sunx = -0.7, double suny = 0.3, double sunz = 0.65) override {
-            const double PI = acos(-1.0);
+        // Корона рисуется до всех тел, чтобы тела перед Солнцем её перекрывали
+        void draw_back(const RenderContext& ctx) override {
+            const Camera& cam = ctx.cam;
+            Vec3 c = pos - cam.pos;
+            double d = c.len();
+            if (c.z <= 0 || d <= radius) return;
 
-            int size = y * dx;
-            double R  = size / 2.0 * dr;
-            double cx = size / 2.0 + ddx;
-            double cy = size / 2.0 + ddy;
-            double ct = cos(tilt), st = sin(tilt);
+            double rd   = cam.focal * tan(asin(radius / d));      // радиус диска на экране
+            double cxp  = cam.w / 2.0 + cam.focal * c.x / c.z;
+            double cyp  = cam.h / 2.0 - cam.focal * c.y / c.z;
+            double reach = rd * (1.0 + corona);
 
-            double reach = R * (1.0 + corona);
-            int x0 = max(0, (int)floor((cx - reach) / dx) * dx);
-            int y0 = max(0, (int)floor((cy - reach) / dx) * dx);
-            int x1 = (int)(cx + reach);
-            int y1 = (int)(cy + reach);
+            int x0 = (int)max(0.0, floor(cxp - reach));
+            int y0 = (int)max(0.0, floor(cyp - reach));
+            int x1 = (int)min((double)cam.w, ceil(cxp + reach));
+            int y1 = (int)min((double)cam.h, ceil(cyp + reach));
+            x0 -= x0 % dx;
+            y0 -= y0 % dx;
 
             for (int py = y0; py < y1; py += dx){
-                if (canvas_h > 0 && py >= canvas_h) break;
                 for (int px = x0; px < x1; px += dx){
-                    if (canvas_w > 0 && px >= canvas_w) break;
+                    double ox = px + dx / 2.0 - cxp;
+                    double oy = py + dx / 2.0 - cyp;
+                    double dd = max(0.0, sqrt(ox * ox + oy * oy) / rd - 1.0);   // расстояние от края в радиусах
+                    double a  = atan2(-oy, ox);
 
-                    double u =  (px + dx / 2.0 - cx) / R;
-                    double v = -(py + dx / 2.0 - cy) / R;
-                    double r2 = u * u + v * v;
+                    // лучи короны медленно меняются с вращением
+                    double streak = 0.8 + 0.2 * sin(5 * a + rot * 0.5) * sin(3 * a - rot * 0.3);
+                    double glow = (exp(-dd * 6.0) * 0.85 + exp(-dd * 1.8) * 0.18) * streak;
 
-                    // ---------- корона (за пределами диска) ----------
-                    if (r2 > 1.0){
-                        double d = sqrt(r2) - 1.0;                       // расстояние от края в радиусах
-                        double a = atan2(v, u);
-                        // лучи короны: медленно меняются с вращением
-                        double streak = 0.8 + 0.2 * sin(5 * a + rot * 0.5) * sin(3 * a - rot * 0.3);
-                        double glow = (exp(-d * 6.0) * 0.85 + exp(-d * 1.8) * 0.18) * streak;
-                        if (glow < 0.01) continue;
-                        glow = min(1.0, glow);
-                        Cell out((int)(255 * glow), (int)(190 * glow), (int)(110 * glow * glow));
-                        draw.rectangle(px, py, px + dx, py + dx, out.get_color());
-                        continue;
-                    }
+                    // плавное затухание до нуля к границе области (dd == corona),
+                    // иначе на краю квадрата остаётся видимая ступенька
+                    glow *= 1.0 - sstep(corona * 0.35, corona, dd);
+                    if (glow < 0.004) continue;
+                    glow = min(1.0, glow);
 
-                    // ---------- диск ----------
-                    double w = sqrt(1.0 - r2);                           // 1 в центре, 0 на краю
-
-                    double v2 = v * ct - w * st;
-                    double w2 = v * st + w * ct;
-                    double lat = asin(max(-1.0, min(1.0, v2)));
-
-                    // дифференциальное вращение: экватор крутится быстрее полюсов
-                    double lon = atan2(u, w2) + rot * (1.0 - 0.15 * v2 * v2);
-
-                    double fx = fmod(lon / (2 * PI) + 0.5, 1.0);
-                    if (fx < 0) fx += 1.0;
-                    double fy = clamp01(0.5 - lat / PI);
-
-                    double r, g, b;
-                    sample_color(fx, fy, r, g, b);
-
-                    // потемнение к краю: края темнее и краснее
-                    double k = 1.0 - 0.6 * (1.0 - w);
-                    r *= k;
-                    g *= pow(k, 1.3);
-                    b *= pow(k, 2.0);
-
-                    // лёгкое свечение (bloom) у самого края
-                    double rim = pow(1.0 - w, 6.0) * 0.25;
-                    r += 255 * rim; g += 150 * rim; b += 40 * rim;
-
-                    Cell out((int)min(255.0, r), (int)min(255.0, g), (int)min(255.0, b));
+                    Cell out((int)(255 * glow), (int)(190 * glow), (int)(110 * glow * glow));
                     draw.rectangle(px, py, px + dx, py + dx, out.get_color());
                 }
             }
