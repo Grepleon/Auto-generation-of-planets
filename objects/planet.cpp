@@ -6,6 +6,8 @@
 #include <cmath>
 #include <algorithm>
 
+#pragma once
+
 using namespace std;
 
 struct Material {
@@ -45,8 +47,8 @@ static inline Cell ramp(const Cell& a, const Cell& b, const Cell& c, double t){
     return t < 0.5 ? a.mix(b, t * 2) : b.mix(c, (t - 0.5) * 2);
 }
 
-class Planet{
-    private:
+class Planet{    
+    protected:
         int x, y, dx;
         vector<vector<Cell>> cells;
         vector<vector<unsigned char>> water;   // 1 - открытая вода (для блика)
@@ -100,7 +102,9 @@ class Planet{
             clouds.resize(y, vector<double>(x, 0.0));
         }
 
-        void fill(){
+        virtual ~Planet(){}
+
+        virtual void fill(){
             const double PI = acos(-1.0);
 
             // весь шум считается на сфере: у полюсов нет растяжения и лучей
@@ -207,7 +211,7 @@ class Planet{
             }
         }
 
-        void show(){
+        virtual void show(){
             for (int iy=0; iy < y; iy++){
                 for (int ix=0; ix < x; ix++){
                     draw.rectangle(
@@ -222,7 +226,7 @@ class Planet{
         }
 
         // sunx, suny, sunz - направление на солнце (x вправо, y вверх, z к зрителю)
-        void show3D(int ddx=0, int ddy=0, double dr=1, double rot = 0.0, double tilt = 0.0,
+        virtual void show3D(int ddx=0, int ddy=0, double dr=1, double rot = 0.0, double tilt = 0.0,
                     double sunx = -0.7, double suny = 0.3, double sunz = 0.65){
             const double PI = acos(-1.0);
 
