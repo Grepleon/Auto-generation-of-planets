@@ -20,8 +20,11 @@ int main() {
     bh.fill();
     bh.set_pose(0.0, 0.2);
 
+    BlackHole bh2(1024, 512, 1, draw, Vec3(0, 10, 20), 3);   // радиус горизонта = 2
+    bh2.fill();
+    bh2.set_pose(0.0, 0.2);
 
     scene.add(&bh);
     scene.render();
-    draw.Save("data/sun/sun-3.2.png");
+    draw.Save("data/sun/sun-3.3.png");
 }
