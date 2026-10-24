@@ -110,9 +110,13 @@ class Sun : public Planet {
             }
         }
 
-        // Корона рисуется до всех тел, чтобы тела перед Солнцем её перекрывали
-        void draw_back(const RenderContext& ctx) override {
+        // Корона: добавляется к уже нарисованному кадру.
+        //  - поверх более далёких тел (в том числе другого солнца) она светится;
+        //  - тела, стоящие ближе Солнца, её перекрывают, а вокруг них корона остаётся видна (затмение);
+        //  - на самом диске Солнца не рисуется, там уже есть своё свечение края.
+        void draw_glow(RenderContext& ctx) override {
             const Camera& cam = ctx.cam;
+            Framebuffer& fb = ctx.fb;
             Vec3 c = pos - cam.pos;
             double d = c.len();
             if (c.z <= 0 || d <= radius) return;
@@ -121,6 +125,7 @@ class Sun : public Planet {
             double cxp  = cam.w / 2.0 + cam.focal * c.x / c.z;
             double cyp  = cam.h / 2.0 - cam.focal * c.y / c.z;
             double reach = rd * (1.0 + corona);
+            double front = d - radius - 1e-6;                     // ближайшая точка Солнца
 
             int x0 = (int)max(0.0, floor(cxp - reach));
             int y0 = (int)max(0.0, floor(cyp - reach));
@@ -140,14 +145,22 @@ class Sun : public Planet {
                     double streak = 0.8 + 0.2 * sin(5 * a + rot * 0.5) * sin(3 * a - rot * 0.3);
                     double glow = (exp(-dd * 6.0) * 0.85 + exp(-dd * 1.8) * 0.18) * streak;
 
-                    // плавное затухание до нуля к границе области (dd == corona),
-                    // иначе на краю квадрата остаётся видимая ступенька
+                    // плавное затухание до нуля к границе области (dd == corona)
                     glow *= 1.0 - sstep(corona * 0.35, corona, dd);
                     if (glow < 0.004) continue;
                     glow = min(1.0, glow);
 
-                    Cell out((int)(255 * glow), (int)(190 * glow), (int)(110 * glow * glow));
-                    draw.rectangle(px, py, px + dx, py + dx, out.get_color());
+                    double gr = 255 * glow, gg = 190 * glow, gb = 110 * glow * glow;
+
+                    for (int yy = py; yy < py + dx; yy++){
+                        for (int xx = px; xx < px + dx; xx++){
+                            if (!fb.inside(xx, yy)) continue;
+                            size_t i = (size_t)yy * fb.w + xx;
+                            if (fb.id[i] == uid) continue;       // собственный диск
+                            if (fb.z[i] < front) continue;       // перед Солнцем что-то стоит
+                            fb.add(xx, yy, gr, gg, gb);
+                        }
+                    }
                 }
             }
         }
