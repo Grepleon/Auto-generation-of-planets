@@ -2,6 +2,7 @@
 #include "draw.cpp"
 #include "objects/planet.cpp"
 #include "objects/sun.cpp"
+#include "objects/blackhole.cpp"
 #include "objects/scene.cpp"
 #include <vector>
 
@@ -13,28 +14,14 @@ int main() {
     Drawer draw = Drawer(x, y);
     draw.blackRectangle(0, 0, x-1, y-1);
     Camera cam(2560, 1440, Vec3(0, 0, -60), 40);
-    Scene scene(cam);
+    Scene scene(cam, draw);
 
-    Sun sun(1024, 512, 1, draw, Vec3(-12, 2, 20), 8);
-    sun.fill();
-    sun.set_pose(0.3, 0.1);          // rot, tilt
+    BlackHole bh(1024, 512, 1, draw, Vec3(0, 0, 40), 6);   // радиус горизонта = 2
+    bh.fill();
+    bh.set_pose(0.0, 0.2);
 
-    Planet earth(1024, 512, 1, draw, Vec3(10, -2, 5), 3);
-    earth.fill();
-    earth.set_pose(1.2, 0.4);
 
-    Planet mars(1024, 512, 1, draw, Vec3(-1, -12, 1), 2);
-    mars.fill();
-    mars.set_pose(1.2, 0.4);
-
-    Sun sun2(1024, 512, 1, draw, Vec3(-20, -5, 36), 8);
-    sun2.fill();
-    sun2.set_pose(0.3, 0.1);  
-
-    scene.add(&sun);
-    scene.add(&sun2);
-    scene.add(&earth);
-    scene.add(&mars);
+    scene.add(&bh);
     scene.render();
-    draw.Save("data/sun/sun-1.4.png");
+    draw.Save("data/sun/sun-3.2.png");
 }

@@ -22,6 +22,7 @@ struct Vec3 {
     Vec3 operator-(const Vec3& o) const { return Vec3(x - o.x, y - o.y, z - o.z); }
     Vec3 operator*(double k)      const { return Vec3(x * k, y * k, z * k); }
     double dot(const Vec3& o)     const { return x * o.x + y * o.y + z * o.z; }
+    Vec3 cross(const Vec3& o)     const { return Vec3(y * o.z - z * o.y, z * o.x - x * o.z, x * o.y - y * o.x); }
     double len()                  const { return sqrt(x * x + y * y + z * z); }
     Vec3 norm() const {
         double l = len();
@@ -59,12 +60,63 @@ struct Light {
     const Planet* owner = nullptr;  // тело, которое светит (оно не отбрасывает тень на свет)
 };
 
-// Всё, что нужно телу для отрисовки: камера, источники света и другие тела (для теней)
+// Буфер кадра: цвет, глубина (расстояние от камеры) и номер тела для каждого пикселя.
+// Глубина даёт правильное перекрытие тел без сортировки, а цвет можно складывать (корона).
+struct Framebuffer {
+    int w, h;
+    vector<float> col;              // r, g, b подряд
+    vector<float> z;                // расстояние до ближайшей поверхности
+    vector<int> id;                 // какое тело нарисовано в пикселе (-1 = никакое)
+    vector<unsigned char> dirty;    // пиксель менялся
+    float bgc[3];                   // цвет фона
+
+    Framebuffer(int w, int h, double r = 0, double g = 0, double b = 0)
+        : w(w), h(h), col(3 * (size_t)w * h), z((size_t)w * h, 1e30f),
+          id((size_t)w * h, -1), dirty((size_t)w * h, 0)
+    {
+        bgc[0] = (float)r;  bgc[1] = (float)g;  bgc[2] = (float)b;
+        for (size_t i = 0; i < (size_t)w * h; i++){
+            col[3 * i] = (float)r;  col[3 * i + 1] = (float)g;  col[3 * i + 2] = (float)b;
+        }
+    }
+
+    bool inside(int px, int py) const { return px >= 0 && py >= 0 && px < w && py < h; }
+
+    // непрозрачная запись с проверкой глубины
+    void put(int px, int py, double t, int body, double r, double g, double b){
+        if (!inside(px, py)) return;
+        size_t i = (size_t)py * w + px;
+        if (t >= z[i]) return;
+        z[i] = (float)t;  id[i] = body;
+        col[3 * i] = (float)r;  col[3 * i + 1] = (float)g;  col[3 * i + 2] = (float)b;
+        dirty[i] = 1;
+    }
+
+    // прямая запись цвета без проверки глубины (постобработка)
+    void set(int px, int py, double r, double g, double b){
+        if (!inside(px, py)) return;
+        size_t i = (size_t)py * w + px;
+        col[3 * i] = (float)r;  col[3 * i + 1] = (float)g;  col[3 * i + 2] = (float)b;
+        dirty[i] = 1;
+    }
+
+    // аддитивная запись (свечение), глубину не трогает
+    void add(int px, int py, double r, double g, double b){
+        if (!inside(px, py)) return;
+        size_t i = (size_t)py * w + px;
+        col[3 * i] += (float)r;  col[3 * i + 1] += (float)g;  col[3 * i + 2] += (float)b;
+        dirty[i] = 1;
+    }
+};
+
+// Всё, что нужно телу для отрисовки: камера, источники света, другие тела (для теней) и буфер кадра
 struct RenderContext {
     Camera cam;
     vector<Light> lights;
     vector<const Planet*> bodies;
-    RenderContext(const Camera& c): cam(c) {}
+    Framebuffer fb;
+    RenderContext(const Camera& c, double br = 0, double bg = 0, double bb = 0)
+        : cam(c), fb(c.w, c.h, br, bg, bb) {}
 };
 
 struct Material {
@@ -121,6 +173,7 @@ class Planet{
         double radius;       // радиус в мировых единицах
         double rot  = 0.0;   // поворот вокруг своей оси (радианы)
         double tilt = 0.0;   // наклон оси (радианы)
+        int uid = -1;        // номер тела в сцене (назначает Scene::add)
 
         // билинейная выборка цвета карты; fx, fy - доли карты 0..1
         void sample_color(double fx, double fy, double& r, double& g, double& b){
@@ -319,8 +372,14 @@ class Planet{
         // Если тело светит само, заполняет out и возвращает true
         virtual bool emit_light(Light& out) const { return false; }
 
-        // Рисуется до всех тел (свечение, корона)
-        virtual void draw_back(const RenderContext& ctx){}
+        void set_id(int i) { uid = i; }
+
+        // Свечение (корона). Вызывается после того, как нарисованы ВСЕ тела:
+        // складывается с тем, что уже в кадре, и скрывается телами, стоящими ближе.
+        virtual void draw_glow(RenderContext& ctx){}
+
+        // Постобработка готового кадра (линзирование и т. п.). Вызывается последней.
+        virtual void post_process(RenderContext& ctx){}
 
         // ---------- генерация поверхности ----------
         virtual void fill(){
@@ -449,8 +508,9 @@ class Planet{
 
         // Объёмный вывод: трассировка луча от камеры через каждый пиксель до сферы.
         // Общий для всех тел; различается только shade_point().
-        virtual void show3D(const RenderContext& ctx){
+        virtual void show3D(RenderContext& ctx){
             const Camera& cam = ctx.cam;
+            Framebuffer& fb = ctx.fb;
 
             int x0, y0, x1, y1;
             if (!screen_box(cam, x0, y0, x1, y1)) return;
@@ -474,7 +534,10 @@ class Planet{
                     Vec3 V = D * -1.0;
 
                     Cell out = shade_point(P, N, V, ctx);
-                    draw.rectangle(px, py, px + dx, py + dx, out.get_color());
+                    int* c = out.get_color();
+                    for (int yy = py; yy < py + dx; yy++)
+                        for (int xx = px; xx < px + dx; xx++)
+                            fb.put(xx, yy, t, uid, c[0], c[1], c[2]);
                 }
             }
         }
